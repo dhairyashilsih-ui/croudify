@@ -21,6 +21,7 @@ class SmartController(private val onFrameReadyToSend: (ByteArray) -> Unit) {
     // Adaptive controls
     var currentFpsTarget = 15
     private var lastFrameTimeMs = 0L
+    private var lastSentFrameTimeMs = 0L
     private val isProcessing = AtomicBoolean(false)
 
     fun processFrame(image: Image) {
@@ -40,8 +41,15 @@ class SmartController(private val onFrameReadyToSend: (ByteArray) -> Unit) {
                 val (hasMotion, newYPlane) = ImageUtils.hasMotion(image, previousYPlane, threshold = 12)
                 previousYPlane = newYPlane
 
-                if (hasMotion) {
-                    Log.d("SmartController", "Motion detected! Processing frame for transmission.")
+                val timeSinceLastSend = currentTime - lastSentFrameTimeMs
+
+                if (hasMotion || timeSinceLastSend > 1500) { // Send at least every 1.5s to prevent UI timeout
+                    if (!hasMotion) {
+                        Log.d("SmartController", "Sending heartbeat frame (no motion).")
+                    } else {
+                        Log.d("SmartController", "Motion detected! Processing frame for transmission.")
+                    }
+                    lastSentFrameTimeMs = currentTime
                     // 2. Resize to max 640x480 & Compress to 30-40% 
                     val jpegBytes = ImageUtils.yuv420ToJpeg(image, 640, 480, 35)
                     
