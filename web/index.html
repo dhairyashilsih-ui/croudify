@@ -9,7 +9,7 @@
     <script src="https://cdn.tailwindcss.com"></script>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
     <!-- QR Code library -->
-    <script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.3/build/qrcode.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
     <style>
         body { font-family: 'Inter', sans-serif; background-color: #f1f5f9; }
         .glass-panel {
@@ -124,7 +124,7 @@
 
                 <!-- Right: QR code -->
                 <div class="flex flex-col items-center gap-2">
-                    <canvas id="qrCanvas" class="rounded-xl border border-slate-200 shadow-sm" width="120" height="120"></canvas>
+                    <div id="qrCanvas" class="rounded-xl border border-slate-200 shadow-sm bg-white p-1" style="width:120px;height:120px;"></div>
                     <p class="text-xs text-slate-400">Scan to connect</p>
                 </div>
             </div>

@@ -115,8 +115,16 @@ function showSessionCode(code) {
     // Update sidebar badge
     currentSessionCode.textContent = code;
 
-    // Generate QR code (encodes the code string so operator can share instantly)
-    QRCode.toCanvas(qrCanvas, code, { width: 120, margin: 1, color: { dark: '#1e3a8a', light: '#eff6ff' } });
+    // Generate QR code using qrcodejs (new QRCode(element, opts))
+    qrCanvas.innerHTML = '';          // clear any previous QR
+    new QRCode(qrCanvas, {
+        text: code,
+        width: 112,
+        height: 112,
+        colorDark: '#1e3a8a',
+        colorLight: '#eff6ff',
+        correctLevel: QRCode.CorrectLevel.M
+    });
 
     // Show panel
     sessionPanel.classList.remove('hidden');
