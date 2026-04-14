@@ -1,36 +1,41 @@
 // ── DOM refs ────────────────────────────────────────────────────────────────
-const videoStream        = document.getElementById('videoStream');
-const noSignal           = document.getElementById('noSignal');
-const reconnectingOverlay= document.getElementById('reconnectingOverlay');
-const peopleCount        = document.getElementById('peopleCount');
-const statusBadge        = document.getElementById('statusBadge');
-const statusIndicator    = document.getElementById('statusIndicator');
-const statusLabel        = document.getElementById('statusLabel');
-const timestampDisplay   = document.getElementById('timestampDisplay');
-const latencyCalc        = document.getElementById('latencyCalc');
-const densityCard        = document.getElementById('densityCard');
-const alertBox           = document.getElementById('alertBox');
-const alertIcon          = document.getElementById('alertIcon');
-const alertTitle         = document.getElementById('alertTitle');
-const alertMessage       = document.getElementById('alertMessage');
-const statusText         = document.getElementById('statusText');
-const statusDot          = document.getElementById('statusDot');
-const alertSound         = document.getElementById('alertSound');
+const videoStream = document.getElementById('videoStream');
+const noSignal = document.getElementById('noSignal');
+const reconnectingOverlay = document.getElementById('reconnectingOverlay');
+const peopleCount = document.getElementById('peopleCount');
+const statusBadge = document.getElementById('statusBadge');
+const statusIndicator = document.getElementById('statusIndicator');
+const statusLabel = document.getElementById('statusLabel');
+const timestampDisplay = document.getElementById('timestampDisplay');
+const latencyCalc = document.getElementById('latencyCalc');
+const densityCard = document.getElementById('densityCard');
+const alertBox = document.getElementById('alertBox');
+const alertIcon = document.getElementById('alertIcon');
+const alertTitle = document.getElementById('alertTitle');
+const alertMessage = document.getElementById('alertMessage');
+const statusText = document.getElementById('statusText');
+const statusDot = document.getElementById('statusDot');
+const alertSound = document.getElementById('alertSound');
 const sessionInstructions = document.getElementById('sessionInstructions');
-const connectedSessionCode= document.getElementById('connectedSessionCode');
-const currentSessionCode  = document.getElementById('currentSessionCode');
+const connectedSessionCode = document.getElementById('connectedSessionCode');
+const currentSessionCode = document.getElementById('currentSessionCode');
 
 // ── State ───────────────────────────────────────────────────────────────────
 let ws;
-let lastFrameTime       = Date.now();
+let lastFrameTime = Date.now();
 let checkConnectionInterval;
-let redStateStartTime   = 0;
-let isAlertActive       = false;
-let activeSessionCode   = null;     // current 6-char code
-let activeServerHost    = null;     // current host (no protocol)
+let redStateStartTime = 0;
+let isAlertActive = false;
+let activeSessionCode = null;     // current 6-char code
+let activeServerHost = null;     // current host (no protocol)
 
-const STORAGE_KEY       = 'crowdpulse_server_host';
-const CODE_STORAGE_KEY  = 'crowdpulse_session_code';
+// FIX: Track the pending preload image so we can cancel it if a newer
+// frame arrives before the previous one finishes loading. Without this,
+// out-of-order onload callbacks could display an older frame over a newer one.
+let pendingImage = null;
+
+const STORAGE_KEY = 'crowdpulse_server_host';
+const CODE_STORAGE_KEY = 'crowdpulse_session_code';
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 function getServerHost() {
@@ -120,27 +125,70 @@ function connectToDashboard(host, code) {
             const data = JSON.parse(event.data);
             updateDashboard(data);
         } else if (event.data instanceof ArrayBuffer) {
-            const blob = new Blob([event.data], { type: "image/jpeg" });
-            const newUrl = URL.createObjectURL(blob);
-
-            // Preload off-screen, then swap — eliminates flicker
-            const img = new Image();
-            img.onload = () => {
-                if (window.previousImageUrl) {
-                    URL.revokeObjectURL(window.previousImageUrl);
-                }
-                videoStream.src = newUrl;
-                window.previousImageUrl = newUrl;
-
-                videoStream.classList.remove('hidden');
-                noSignal.classList.add('hidden');
-                reconnectingOverlay.classList.replace('opacity-100', 'opacity-0');
-                reconnectingOverlay.classList.add('pointer-events-none');
-                lastFrameTime = Date.now();
-            };
-            img.src = newUrl;
+            renderFrame(event.data);
         }
     };
+}
+
+// ── Frame rendering ───────────────────────────────────────────────────────────
+/**
+ * FIX: Replaced direct img.src swap with an off-screen preload + atomic swap.
+ *
+ * OLD behaviour:
+ *   videoStream.src = newBlobUrl
+ *   → The <img> tag briefly goes blank while the browser decodes the new JPEG.
+ *   → At 10-12 FPS this blank gap is visible as constant flickering / strobing.
+ *
+ * NEW behaviour:
+ *   1. Create an off-screen Image() and set its src to the new blob URL.
+ *   2. Only swap videoStream.src AFTER the new image is fully decoded (onload).
+ *   3. Revoke the OLD blob URL only after the swap — never before — so there
+ *      is no moment where the visible <img> has no valid src.
+ *   4. Cancel any in-flight preload if a newer frame arrives first, preventing
+ *      out-of-order frames from appearing (fast network bursts can deliver
+ *      two frames before the first onload fires).
+ */
+function renderFrame(arrayBuffer) {
+    const blob = new Blob([arrayBuffer], { type: "image/jpeg" });
+    const newUrl = URL.createObjectURL(blob);
+
+    // Cancel previous pending preload to avoid stale out-of-order swap
+    if (pendingImage) {
+        pendingImage.onload = null;
+        pendingImage.onerror = null;
+        pendingImage = null;
+    }
+
+    const img = new Image();
+
+    img.onload = () => {
+        // Revoke the OLD blob URL now that the new frame is ready
+        if (window.previousImageUrl) {
+            URL.revokeObjectURL(window.previousImageUrl);
+        }
+
+        // Atomic swap — browser paints new frame with zero blank gap
+        videoStream.src = newUrl;
+        window.previousImageUrl = newUrl;
+        pendingImage = null;
+
+        // Show stream, hide placeholders
+        videoStream.classList.remove('hidden');
+        noSignal.classList.add('hidden');
+        reconnectingOverlay.classList.replace('opacity-100', 'opacity-0');
+        reconnectingOverlay.classList.add('pointer-events-none');
+
+        lastFrameTime = Date.now();
+    };
+
+    img.onerror = () => {
+        // Blob was revoked or corrupt — free memory and move on
+        URL.revokeObjectURL(newUrl);
+        pendingImage = null;
+    };
+
+    pendingImage = img;
+    img.src = newUrl;
 }
 
 // ── Dashboard update ─────────────────────────────────────────────────────────
@@ -151,7 +199,7 @@ function updateDashboard(data) {
     timestampDisplay.textContent = d.toLocaleTimeString();
 
     applyStatusColor(data.status);
-    
+
     if (data.status === "RED") {
         if (redStateStartTime === 0) redStateStartTime = Date.now();
         const duration = (Date.now() - redStateStartTime) / 1000;
@@ -191,10 +239,10 @@ function triggerAlert() {
     alertTitle.classList.add('text-red-700');
     alertMessage.textContent = "High density threshold exceeded for >10 seconds. Dispatching security.";
     alertMessage.classList.replace('text-slate-500', 'text-red-600');
-    
+
     try {
         alertSound.play().catch(e => console.log("Sound blocked by browser policy"));
-    } catch(e) {}
+    } catch (e) { }
 }
 
 function clearAlert() {

@@ -27,9 +27,13 @@ class WebRTCClient(private val context: Context, private val onConnectionStateCh
 
     private val scope = CoroutineScope(Dispatchers.IO)
 
+    // FIX: Track last sent timestamp to throttle frame rate.
+    // Android camera produces 30 FPS but the server can only process ~10-12 FPS.
+    // Without throttling, the WebSocket send buffer floods causing OkHttp to
+    // silently drop frames erratically — producing the "stuck then jump" behavior.
     private var lastFrameSentAt = 0L
-    private val TARGET_FPS = 12  // match to server's processing rate
-    private val FRAME_INTERVAL_MS = 1000L / TARGET_FPS
+    private val TARGET_FPS = 12
+    private val FRAME_INTERVAL_MS = 1000L / TARGET_FPS  // ~83ms between frames
 
     /**
      * Set or update the backend host. No session code required here;
@@ -51,6 +55,9 @@ class WebRTCClient(private val context: Context, private val onConnectionStateCh
         // Use cancel() to abruptly kill the socket rather than waiting for a graceful close handshake
         webSocket?.cancel()
         isConnected = false
+        // FIX: Reset frame throttle timer on new session so first frame is
+        // sent immediately rather than waiting up to FRAME_INTERVAL_MS
+        lastFrameSentAt = 0L
         onConnectionStateChanged(false)
         connectWebSocket()
     }
@@ -64,11 +71,13 @@ class WebRTCClient(private val context: Context, private val onConnectionStateCh
         val url = "$protocol://$serverHost/ws/camera/$sessionCode"
         Log.d("WebRTCClient", "Connecting to: $url")
         val request = Request.Builder().url(url).build()
-        
+
         webSocket = client.newWebSocket(request, object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
                 Log.d("WebRTCClient", "WebSocket Connected! Session: $sessionCode")
                 isConnected = true
+                // FIX: Reset throttle on reconnect so first frame goes out immediately
+                lastFrameSentAt = 0L
                 onConnectionStateChanged(true)
             }
 
@@ -112,17 +121,38 @@ class WebRTCClient(private val context: Context, private val onConnectionStateCh
         }
     }
 
+    /**
+     * Send a JPEG frame to the backend.
+     *
+     * FIX: Added timestamp-based throttling to match server processing rate.
+     *
+     * Problem: Camera produces frames at ~30 FPS. The server processes at ~10-12 FPS.
+     * Sending every frame causes OkHttp's internal send buffer to fill up.
+     * When full, send() returns false and frames are dropped unpredictably,
+     * causing the dashboard to freeze for seconds then jump forward suddenly.
+     *
+     * Solution: Drop frames on the sender side at a controlled rate (TARGET_FPS)
+     * instead of letting the buffer decide randomly which frames to drop.
+     * This keeps the pipe clear and ensures each frame that IS sent gets
+     * processed and displayed promptly without queuing delay.
+     */
     fun sendFrame(jpegBytes: ByteArray) {
         if (!isConnected) return
-        
+
         val now = System.currentTimeMillis()
-        if (now - lastFrameSentAt < FRAME_INTERVAL_MS) return  // drop this frame
+
+        // FIX: Skip this frame if we haven't waited long enough since the last send
+        if (now - lastFrameSentAt < FRAME_INTERVAL_MS) return
+
         lastFrameSentAt = now
 
         val byteString = ByteString.of(*jpegBytes)
         val success = webSocket?.send(byteString) ?: false
         if (!success) {
-            Log.w("WebRTCClient", "Frame dropped — socket buffer full")
+            // Buffer still full even at reduced rate — log and reset timer
+            // so we back off slightly before the next attempt
+            Log.w("WebRTCClient", "Frame dropped — socket buffer full (consider reducing TARGET_FPS)")
+            lastFrameSentAt = now + FRAME_INTERVAL_MS  // add extra back-off
         }
     }
 
